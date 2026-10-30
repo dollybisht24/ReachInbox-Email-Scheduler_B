@@ -44,6 +44,17 @@ const handleGoogleAuth = (req: Request, res: Response) => {
     maxAge: 10 * 60 * 1000, // 10 minutes
   });
 
+  // Track the frontend origin that initiated the login (e.g. Vercel vs localhost)
+  const referer = req.headers.referer || req.headers.origin || env.FRONTEND_URL;
+  const targetFrontend = String(referer).replace(/\/$/, '').replace(/\/login$/, '');
+  res.cookie('oauth_origin', targetFrontend, {
+    httpOnly: true,
+    secure: false,
+    sameSite: 'lax',
+    path: '/',
+    maxAge: 10 * 60 * 1000,
+  });
+
   const authUrl = getGoogleOAuthUrl(state);
   return res.redirect(authUrl);
 };
@@ -57,17 +68,23 @@ authRouter.get('/api/auth/google', handleGoogleAuth);
 const handleGoogleCallback = async (req: Request, res: Response) => {
   const { code, state, error } = req.query;
 
+  const returnFrontend =
+    req.cookies?.oauth_origin ||
+    env.FRONTEND_URL ||
+    'https://reachinbox-frontend-beryl.vercel.app';
+  res.clearCookie('oauth_origin', { path: '/' });
+
   if (error) {
-    return res.redirect(`${env.FRONTEND_URL}/login?error=${encodeURIComponent(String(error))}`);
+    return res.redirect(`${returnFrontend}/login?error=${encodeURIComponent(String(error))}`);
   }
 
   if (!code || typeof code !== 'string') {
-    return res.redirect(`${env.FRONTEND_URL}/login?error=missing_code`);
+    return res.redirect(`${returnFrontend}/login?error=missing_code`);
   }
 
   const storedState = req.cookies?.oauth_state;
   if (storedState && state && state !== storedState) {
-    return res.redirect(`${env.FRONTEND_URL}/login?error=invalid_state`);
+    return res.redirect(`${returnFrontend}/login?error=invalid_state`);
   }
 
   res.clearCookie('oauth_state', { path: '/' });
@@ -92,11 +109,11 @@ const handleGoogleCallback = async (req: Request, res: Response) => {
       maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
     });
 
-    return res.redirect(`${env.FRONTEND_URL}/dashboard?token=${sessionToken}`);
+    return res.redirect(`${returnFrontend}/dashboard?token=${sessionToken}`);
   } catch (err: any) {
     console.error('[Google OAuth Error]', err.response?.data || err.message);
     return res.redirect(
-      `${env.FRONTEND_URL}/login?error=${encodeURIComponent(
+      `${returnFrontend}/login?error=${encodeURIComponent(
         err.message || 'Authentication failed'
       )}`
     );
@@ -105,6 +122,94 @@ const handleGoogleCallback = async (req: Request, res: Response) => {
 
 authRouter.get('/auth/google/callback', handleGoogleCallback);
 authRouter.get('/api/auth/google/callback', handleGoogleCallback);
+
+/**
+ * Google Credential (JWT) Login from Frontend
+ */
+const handleGoogleCredential = async (req: Request, res: Response) => {
+  const { credential, email, name, avatar } = req.body;
+  let userEmail = email;
+  let userName = name;
+  let userAvatar = avatar;
+  let googleId;
+
+  if (credential && typeof credential === 'string') {
+    try {
+      const parts = credential.split('.');
+      if (parts.length >= 2) {
+        const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString());
+        userEmail = payload.email || userEmail;
+        userName = payload.name || userName;
+        userAvatar = payload.picture || userAvatar;
+        googleId = payload.sub;
+      }
+    } catch (e: any) {
+      console.warn('[Google Credential Parse Warning]', e.message);
+    }
+  }
+
+  if (!userEmail) {
+    return res.status(400).json({ error: 'Valid email is required' });
+  }
+
+  try {
+    const user = await prisma.user.upsert({
+      where: { email: userEmail },
+      update: {
+        name: userName || userEmail.split('@')[0],
+        avatar: userAvatar,
+        ...(googleId ? { googleId } : {}),
+      },
+      create: {
+        email: userEmail,
+        name: userName || userEmail.split('@')[0],
+        avatar: userAvatar,
+        googleId,
+      },
+    });
+
+    // Ensure user has their own email as an active sender
+    const existingSender = await prisma.sender.findFirst({
+      where: { userId: user.id, email: userEmail },
+    });
+    if (!existingSender) {
+      await prisma.sender.create({
+        data: {
+          userId: user.id,
+          name: user.name,
+          email: user.email,
+          hourlyLimit: env.MAX_EMAILS_PER_HOUR_PER_SENDER,
+        },
+      });
+    }
+
+    const sessionToken = signSessionToken({
+      userId: user.id,
+      email: user.email,
+      name: user.name,
+      avatar: user.avatar || undefined,
+    });
+
+    res.cookie('reachinbox_token', sessionToken, {
+      httpOnly: true,
+      secure: false,
+      sameSite: 'lax',
+      path: '/',
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+    });
+
+    return res.json({
+      success: true,
+      user,
+      token: sessionToken,
+    });
+  } catch (err: any) {
+    return res.status(500).json({ error: 'Failed to process Google sign-in', message: err.message });
+  }
+};
+
+authRouter.post('/auth/google-credential', handleGoogleCredential);
+authRouter.post('/api/auth/google-credential', handleGoogleCredential);
 
 /**
  * Demo Login (for developer evaluation when Google OAuth credentials are not provided)

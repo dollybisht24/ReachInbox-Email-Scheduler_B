@@ -14,12 +14,24 @@ export function createServer() {
   const app = express();
 
   // CORS configuration for frontend credentials
+  const allowedOrigins = [
+    env.FRONTEND_URL,
+    'http://localhost:5173',
+    'http://127.0.0.1:5173',
+    'https://reachinbox-frontend-beryl.vercel.app',
+  ];
+
   app.use(
     cors({
-      origin: [env.FRONTEND_URL, 'http://localhost:5173', 'http://127.0.0.1:5173'],
+      origin: (origin, callback) => {
+        if (!origin || allowedOrigins.includes(origin) || origin.endsWith('.vercel.app')) {
+          return callback(null, true);
+        }
+        callback(null, true);
+      },
       credentials: true,
       methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-      allowedHeaders: ['Content-Type', 'Authorization'],
+      allowedHeaders: ['Content-Type', 'Authorization', 'bypass-tunnel-reminder'],
     })
   );
 

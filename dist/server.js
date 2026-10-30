@@ -18,11 +18,22 @@ const bullBoard_1 = require("./queue/bullBoard");
 function createServer() {
     const app = (0, express_1.default)();
     // CORS configuration for frontend credentials
+    const allowedOrigins = [
+        env_1.env.FRONTEND_URL,
+        'http://localhost:5173',
+        'http://127.0.0.1:5173',
+        'https://reachinbox-frontend-beryl.vercel.app',
+    ];
     app.use((0, cors_1.default)({
-        origin: [env_1.env.FRONTEND_URL, 'http://localhost:5173', 'http://127.0.0.1:5173'],
+        origin: (origin, callback) => {
+            if (!origin || allowedOrigins.includes(origin) || origin.endsWith('.vercel.app')) {
+                return callback(null, true);
+            }
+            callback(null, true);
+        },
         credentials: true,
         methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-        allowedHeaders: ['Content-Type', 'Authorization'],
+        allowedHeaders: ['Content-Type', 'Authorization', 'bypass-tunnel-reminder'],
     }));
     app.use((0, cookie_parser_1.default)());
     app.use(express_1.default.json({ limit: '10mb' }));
